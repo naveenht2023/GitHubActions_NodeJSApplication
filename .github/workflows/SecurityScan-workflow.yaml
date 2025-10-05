@@ -1,0 +1,84 @@
+name: Build code, run unit test, run SAST, SCA, penetration security scans for NodeJs App
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Run unit tests and SAST scan on the source code 
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-node@v3
+      with:
+        node-version: 16
+        cache: npm
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    - run: npm install
+    - uses: actions/checkout@master
+    - name: RunSnyk to check for vulnerabilities
+      uses: snyk/actions/node@master
+      continue-on-error: true
+      env:
+       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+  security:
+    runs-on: ubuntu-latest
+    needs: build
+    name: Run the SCA scan on the source code
+    steps:
+      - uses: actions/checkout@master
+      - name: RunSnyk to check for vulnerabilities
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+  build_scan_image_trivy:
+    runs-on: ubuntu-latest
+    name: build the image
+    steps:
+      - uses: actions/checkout@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: cep/ecrrepo
+          IMAGE_TAG: latest
+        run: |
+            docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+            docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+      - name: Scan Image using Trivy 
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: '767397832888.dkr.ecr.us-east-1.amazonaws.com/cep/ecrrepo:latest'
+          format: 'table'
+          exit-code: '0'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+  pen_scan:
+    runs-on: ubuntu-latest
+    needs: security
+    permissions: write-all
+    name: Run pen scan on the web application
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          ref: master
+      - name: ZAP Scan
+        uses: zaproxy/action-baseline@v0.13.0
+        continue-on-error: true
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          docker_name: 'ghcr.io/zaproxy/zaproxy:stable'
+          target: 'http://3.141.0.47:9090/login'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a'
+   
